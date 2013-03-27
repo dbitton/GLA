@@ -1,0 +1,472 @@
+#!/usr/local/bin/perl -T
+
+use strict;
+use warnings;
+use Storable;
+
+my $debug=0;
+
+
+ use lib qw(/var/www/lib/core);
+ use lib qw(/var/www/lib/S_pombe);
+ use SangerWeb;
+
+
+#use Statistics::ChisqIndep;
+use POSIX;
+use GLA::GLA_module;
+use wilcox;
+
+
+#########
+# Author:        fs3
+# Group:         team 79
+#
+# Result page for Gene List Analyser
+#
+
+
+our $VERSION = do { my @r = (q$Revision: 0.1 $ =~ /\d+/mxg); sprintf '%d.'.'%03d' x $#r, @r };
+
+main();
+1;
+
+sub main {
+
+
+  my $sw = SangerWeb->new();
+  my $data_root = $sw->data_root();
+  my $data_branch="/GLA/";
+  my $data_dir=$data_root.$data_branch;
+
+
+  my $featurefile=$data_dir."_FeatureList";
+  my $pairfeature_file=$data_dir."_PairwiseFeatureList";
+  
+  my $feature_data_file=$data_dir."_FeatureData";
+  my $all_genes_file=$data_dir."_AllGenesList";
+
+
+  my $sw;
+  if (!$debug) {
+    $sw  = SangerWeb->new({
+      'title'   => q(Gene List Analyser Result),
+      #'banner'  => q(Gene List Analyser),
+      #'inifile' => SangerWeb->document_root() . q(/Info/header.ini),
+      #'inifile' => SangerWeb->document_root() . "/PostGenomics/S_pombe/TranscriptomeViewer/header.ini",
+      # 'inifile' => q(header.ini),
+    });
+  } 
+
+  my $cgi;
+  my @all_parameter = ();
+  my $pthreshold        = 0.05;
+  my $mt_correction     = "FDR";
+  my $adjust_p_value_of_permutation_test=0;
+  my $number_of_permutations = 100;
+
+  my @genelist;
+
+  if (!$debug) {
+    $cgi                 = $sw->cgi();
+    @all_parameter       = $cgi->param();
+
+    $pthreshold          = $cgi->param('pvalue');
+    $mt_correction       = $cgi->param('mtadjust');
+    if ($cgi->param('permadjust') eq "Yes") {
+      $adjust_p_value_of_permutation_test = 1;
+    } else {
+      $adjust_p_value_of_permutation_test = 0;
+    }
+    $number_of_permutations              = $cgi->param('nperm');
+
+    my @pre_genelist            = split(/\s+/,$cgi->param('gene_names'));
+    my @mixed_case_genelist         = keys %{{map { $_ => 1 } @pre_genelist}}; 
+    # map to hash and back to produce a unisque genelist 
+    @genelist = map uc,@mixed_case_genelist;
+   #  @genelist = @mixed_case_genelist;
+
+    # uppercase for all gene names
+  } else {
+    my $genelist_file="genelist.txt";
+    open (GLFILE,$genelist_file) || die ("Couldn't open the genelist file \n");
+    @genelist=<GLFILE>;chomp(@genelist);
+  }
+
+
+  if (!$debug) {
+#    print $sw->header();
+print qq(Content-type: text/html\n\n);
+
+print qq (<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<meta http-equiv="content-type" content="text/html; charset=utf-8" />
+<title>Bahler Lab</title>
+<meta name="keywords" content="" />
+<meta name="description" content="" />
+<link href="/css/other.css" rel="stylesheet" type="text/css" />
+</head>
+<body>
+<div id="header">
+<div style="text-align:left; margin-left:70px; margin-bottom:0px; margin-top:0px;"><span style="text-shadow:#FFF; font-family:'Arial Black', Gadget, sans-serif; font-size:32pt; color:#EBF1DE; ">b&auml;hler</span><span style="text-shadow:auto; font-family:'Arial Black', Gadget, sans-serif; font-size:32pt; color:#77933C; ">lab&#13;</span></div>
+  <div style="text-align:left; margin-left:30px; margin-top:0px;"><span style="font-family:'Arial Black', Gadget, sans-serif; font-size:20pt; color:#4F6228; "> Genome Regulation</span></div>
+  <div class="O">
+  <div style="text-align:center; margin-bottom:0; margin-top:-26px; margin-left:120px;margin-right:-20px;"><span style="font-family:Arial, Helvetica, sans-serif; font-size:55pt; color:#D7E4BD; "><strong><em>gene list analyzer&#13;</em></strong></span></div>
+<div style="text-align:right; margin-bottom:0; margin-top:-70px; margin-left:150px;margin-right:20px;"><span style="font-family:'Arial Black', Helvetica, sans-serif; font-size:36pt; color:white; ">UCL</span></div>
+  
+</div>
+</div>
+<div style="margin-top:-65px; margin-left:50px;">);
+ }
+
+  my %chosen_features;
+  
+  foreach my $parameter(@all_parameter) {
+    #don't care about parameter that are known
+    if ($parameter eq "pvalue") {next;}
+    if ($parameter eq "mtadjust") {next;}
+    if ($parameter eq "action") {next;}
+    if ($parameter eq "gene_names") {next;}
+    if ($parameter eq "permadjust") {next;}
+    if ($parameter eq "nperm") {next;}
+
+    my @checkboxes=$cgi->param($parameter);
+    foreach my $checkbox(@checkboxes) {
+        if ($checkbox eq "All") {next;}
+	if ($checkbox eq "None") {next;}
+	$chosen_features{$parameter}{$checkbox}=1;
+    }
+  }
+
+
+
+  #########
+  # print page content
+  #
+  ########
+
+  # Error if the no feature has been chosen
+
+
+  print '
+
+    <SCRIPT LANGUAGE="JavaScript">
+    <!-- Original:  Gilbert Davis -->
+    <!-- Begin
+      function clearStatus() {
+        if (document.getElementById) {  // DOM3 = IE5, NS6
+          document.getElementById("hidepage").style.visibility = "hidden";
+        }
+        else {
+          if (document.layers) {  // Netscape 4
+            document.hidepage.visibility = "hidden";
+          }
+          else {  // IE 4
+            document.all.hidepage.style.visibility = "hidden";
+          }
+       }
+    }
+  //  End -->
+  </script>';
+
+  print '<div id="hidepage">';
+
+  if (scalar(keys(%chosen_features)) == 0) {
+    print "<BR><center><H3>Please select a category !</H3></center><BR>";
+    print '<BR><center><FORM><INPUT TYPE="button" VALUE="Back" onClick="history.go(-1);return true;"> </FORM></center>';
+#    print $sw->footer();
+    exit(0);
+  }
+
+
+  $|=1;  # switch off buffering or this won't work
+  print "<B>Please wait</B>.";
+  print "<p>Loading annotation files...";
+
+  my @annotations=read_feature_description($featurefile);
+
+  if (!defined (@annotations)) {
+    print ("<BR><BR><H3> Error! Couldn't open the feature file $featurefile </H3>");
+ #   print $sw->footer();
+    die;
+  }
+
+
+  my @preIDs    =@{$annotations[0]};
+  my @prelabels =@{$annotations[1]};
+  my @prescales =@{$annotations[2]};
+  my @preclasses=@{$annotations[3]};
+  my @presources=@{$annotations[4]};
+  my @preauthors=@{$annotations[5]};
+  my @predates  =@{$annotations[6]};
+  my @preURLs   =@{$annotations[7]};
+
+
+  @annotations=read_feature_description($pairfeature_file);
+
+  if (!defined (@annotations)) {
+    print ("<BR><BR><H3> Error! Couldn't open the pairwise feature file $pairfeature_file </H3>");
+  #  print $sw->footer();
+  }
+
+
+  my @pIDs    =@{$annotations[0]};
+  my @plabels =@{$annotations[1]};
+  my @pscales =@{$annotations[2]};
+  my @pclasses=@{$annotations[3]};
+  my @psources=@{$annotations[4]};
+  my @pauthors=@{$annotations[5]};
+  my @pdates  =@{$annotations[6]};
+  my @pURLs   =@{$annotations[7]};
+
+  push @preIDs,@pIDs;
+  push @prelabels,@plabels;
+  push @prescales,@pscales;
+  push @preclasses,@pclasses;
+  push @presources,@psources;
+  push @preauthors,@pauthors;
+  push @predates,@pdates;
+  push @preURLs,@pURLs;
+
+  my @IDs; 
+  my @labels;
+  my @scales;
+  my @classes;
+  my @sources;
+  my @authors;
+  my @dates;
+  my @URLs;
+  my @defined_column;
+
+  for (my $i=0;$i<=$#preIDs;$i++) {
+    if (defined ($chosen_features{$preclasses[$i]}{$preIDs[$i]})) {
+      $defined_column[$i]=1;
+      push @IDs, $preIDs[$i];
+      # remove underline _ and replace it with a space
+      $prelabels[$i]=~tr/\_/\ /d;      
+      push @labels, $prelabels[$i];
+      push @scales, $prescales[$i];
+      push @classes, $preclasses[$i];
+      push @sources, $presources[$i];
+      push @authors, $preauthors[$i];
+      #remove quotes because they interfere with HTML
+      $predates[$i]=~tr/\"\'//d;
+      push @dates, $predates[$i];
+      push @URLs, $preURLs[$i];
+    } else {
+      $defined_column[$i]=0;
+    }
+  }
+
+print "Loading data files ...";
+
+
+my @feature_db;
+eval {  
+  @feature_db=@{load_array($feature_data_file)};
+};
+if ($@)
+  {print ("<BR><BR><H3> Error! Couldn't open the main data file ",$feature_data_file," </H3><H4>$@</H4>") && print $sw->footer() && die};
+
+my @all_genes;
+eval {
+  @all_genes =@{load_array($all_genes_file)};
+};
+if ($@)
+   {print ("<BR><BR><H3> Error! Couldn't open the all genes array file", $all_genes_file," </H3><H4>$@</H4>") && print $sw->footer() && die};
+
+print "Preparing data ...";
+
+
+my @category_pointers;
+my @metric_pointers;
+my @pairwise_binary_pointers;
+my @pairwise_metric_pointers;
+
+for (my $i=0;$i<=$#preIDs;$i++) {
+  if ($defined_column[$i]) {
+    if ($prescales[$i] eq "Metric") {	 
+	  push @metric_pointers, $feature_db[$i];
+    } elsif ($prescales[$i] eq "Binary") {
+	  push @category_pointers, $feature_db[$i];
+    } elsif ($prescales[$i] eq "Pairwise_membership") {
+          my $reloaded_hash_ref;
+	  my $hash_name=$data_dir."_hash_data_".$preIDs[$i];
+
+	  eval {
+	    $reloaded_hash_ref= load_hash($hash_name);
+	  };
+          if ($@) 
+	    {print ("<BR><BR><H3> Error! Couldn't open the hash file",$hash_name," </H3><H4>$@</H4>") && print $sw->footer() && die};
+	  push @pairwise_binary_pointers, $reloaded_hash_ref;	
+
+    } 
+    elsif ($prescales[$i] eq "Pairwise_metric") {
+          my $reloaded_hash_ref;
+	  my $hash_name=$data_dir."_hash_data_".$preIDs[$i];
+
+	  eval {
+	    $reloaded_hash_ref= load_hash($hash_name);
+	  };
+          if ($@) 
+	    {print ("<BR><BR><H3> Error! Couldn't open the hash file ",$hash_name," </H3><H4>$@</H4>") && print $sw->footer() && die};
+	  push @pairwise_metric_pointers, $reloaded_hash_ref;	
+
+
+    } 
+    # else {print "<H4>prescales [$i]:  ",$scales[$i]," </H4>";}
+  }
+}
+
+  # print "Performing Chi-squared tests ...";
+  print "Performing Fisher's exact tests ...";
+  my @chisq_results =calculate_fisher_from_genelists(\@genelist, \@all_genes,\@category_pointers); 
+
+  print "Performing Wilcoxon tests ..";
+  my @wilcox_results = calculate_wilcox_from_genelists(\@genelist, \@all_genes,\@metric_pointers); 
+
+  print "Performing Permutation tests ...";
+  my @permutation_results = calculate_permutationtest_from_genelists (\@genelist, \@all_genes,\@pairwise_binary_pointers,\@pairwise_metric_pointers,$number_of_permutations);
+
+  print "Analysing results ..";
+
+  my @chisq_pvalues =    @{$chisq_results[0]};  
+  my @wilcox_pvalues=   @{$wilcox_results[0]};
+  my @permutation_pvalues =    @{$permutation_results[0]};
+
+  my @pvalues;
+
+  if ($adjust_p_value_of_permutation_test) {
+    @pvalues = (@chisq_pvalues,@wilcox_pvalues,@permutation_pvalues);
+  } else {
+    @pvalues = (@chisq_pvalues,@wilcox_pvalues);
+  }
+
+  my @corrected_pvalues=correct_p_values(\@pvalues,$mt_correction);
+ 
+
+  my @p_values;
+  my @raw_p_values;
+  my @test_warnings;
+  my @p1s;
+  my @p2s;
+  
+  # default: p-value=1, warning=2, p1/p2 = NA
+
+  for (my $i=0;$i<=$#scales;$i++) {
+    $p_values[$i]=1;
+    $raw_p_values[$i]=1;
+    $test_warnings[$i]=3;
+    $p1s[$i]="NA";
+    $p2s[$i]="NA";            
+  }
+
+  # first values in stack: result from binary test
+
+  for (my $i=0;$i<=$#scales;$i++) {
+    if (($scales[$i] eq "Binary")) {
+      $p_values[$i]=shift @corrected_pvalues;
+      $raw_p_values[$i]=shift @{$chisq_results[0]};   
+      $test_warnings[$i]=shift @{$chisq_results[1]};
+      $p1s[$i]=shift @{$chisq_results[2]};
+      $p2s[$i]=shift @{$chisq_results[3]};      
+    }
+  }
+  
+  # next values in stack: results from metric test
+  
+  for (my $i=0;$i<=$#scales;$i++) {
+    if (($scales[$i] eq "Metric")) {
+      $p_values[$i]=shift @corrected_pvalues;
+      $raw_p_values[$i] =shift @{$wilcox_results[0]};
+      $test_warnings[$i]=shift @{$wilcox_results[1]};
+      $p1s[$i]=shift @{$wilcox_results[2]};
+      $p2s[$i]=shift @{$wilcox_results[3]};
+    } 
+  }
+
+  # next values in stack: results from permutation test
+
+  for (my $i=0;$i<=$#scales;$i++) {
+    if (($scales[$i] eq "Pairwise_membership") ||($scales[$i] eq "Pairwise_metric")) {
+      if ($adjust_p_value_of_permutation_test) {
+	$p_values[$i]=shift @corrected_pvalues;
+	$raw_p_values[$i]=shift @{$permutation_results[0]};
+      } else {
+	$p_values[$i]=shift @{$permutation_results[0]};
+	$raw_p_values[$i]= $p_values[$i];
+      }
+      $test_warnings[$i]=shift @{$permutation_results[1]};
+      $p1s[$i]=shift @{$permutation_results[2]};
+      $p2s[$i]=shift @{$permutation_results[3]};
+    } 
+  }  
+
+
+  ####################################################
+
+  # find unique class labels
+  my %class_type;
+  my $class;
+  foreach my $class (@classes) {
+    $class_type{$class}=1;
+  }
+
+  my @missing_genes=missing_genes(\@all_genes,\@genelist);
+
+  print "</div>";
+
+  print '<div id="results">';
+  print '<script type="text/javascript">';
+  print     'clearStatus()';
+  print '</script>';
+
+  print_result_document_header(\@missing_genes);
+
+
+  foreach $class(sort keys(%class_type)) {
+    my @labels_for_class=();
+    my @scales_for_class=();
+    my @tips_for_class=();
+    my @raw_pvalues_for_class=();
+    my @pvalues_for_class=();
+    my @test_warning_for_class=();
+    my @p1_for_class=();
+    my @p2_for_class=();
+    my @URLs_for_class=();
+    
+    for (my $counter=0;$counter<=$#classes;$counter++) {
+      if ($classes[$counter] eq $class) {
+        push @labels_for_class, $labels[$counter];
+        push @scales_for_class, $scales[$counter];
+        push @tips_for_class, "$sources[$counter] \[$authors[$counter],$dates[$counter]\]";
+	push @URLs_for_class, $URLs[$counter];
+	push @raw_pvalues_for_class, $raw_p_values[$counter];
+        push @pvalues_for_class, $p_values[$counter];
+        push @test_warning_for_class, $test_warnings[$counter];
+        push @p1_for_class, $p1s[$counter];
+        push @p2_for_class, $p2s[$counter];
+      }
+    }
+
+  print_results_section($class, $pthreshold,\@labels_for_class, \@scales_for_class, \@tips_for_class,
+		\@URLs_for_class,\@raw_pvalues_for_class,\@pvalues_for_class,\@test_warning_for_class,
+                \@p1_for_class,\@p2_for_class);
+  }
+
+
+
+
+
+
+  print_result_document_tail($mt_correction,$pthreshold,scalar(@wilcox_pvalues),
+         scalar(@chisq_pvalues),scalar(@permutation_pvalues),
+         $adjust_p_value_of_permutation_test,$number_of_permutations,\@genelist);
+
+
+  print "</div>";
+  if (!$debug) {
+   print "</div>";
+    #print $sw->footer();
+  }
+}

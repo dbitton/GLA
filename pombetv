@@ -1,0 +1,143 @@
+#!/usr/local/bin/perl -T
+
+
+use strict;
+use warnings;
+
+#use lib "/nfs/WWWdev/SHARED_docs/lib/core";
+#use lib "/nfs/WWWdev/SANGER_docs/perl";
+#use lib "/nfs/WWWdev/SANGER_docs/lib/PostGenomics/S_pombe";
+
+use SangerPaths qw(core spombe);
+use SangerPaths qw(core);
+use SangerWeb;
+
+
+use pombetv::pombetv_module;
+
+
+#########
+# Author:        fs3
+# Group:         team 79
+#
+# Entrance page for transcriptome viewer (pombetv)
+#
+
+
+our $VERSION = do { my @r = (q$Revision: 0.1 $ =~ /\d+/mxg); sprintf '%d.'.'%03d' x $#r, @r };
+
+main();
+1;
+
+sub main {
+
+  my $sw  = SangerWeb->new({
+    'title'   => q(Pombe TV),
+    'banner'  => q(TranscriptomeViewer),
+    'inifile' => SangerWeb->document_root() . q(/Info/header.ini),
+    'inifile' => SangerWeb->document_root() . "/PostGenomics/S_pombe/TranscriptomeViewer/header.ini",
+    # 'inifile' => q(header.ini),    
+  });
+
+  my $cgi                 = $sw->cgi();
+  my $condition           = $cgi->param('condition')  || 13;
+  my $genename            = $cgi->param('genename')  || q();
+  my $action              = $cgi->param('action') || q();
+  my $id_from_cgi         = $cgi->param('ID') || q();
+
+  my $affy_column_name=find_affy_column_name_to_condition($condition);
+  my $solexa_column_name=find_solexa_column_name_to_condition($condition);
+  
+
+  print $sw->header();
+
+  #########
+  # print page content
+  #
+  
+  my @return_values=();
+  my $status=0;
+  my @IDs = ();
+  my @descriptions = ();
+  my @genenames = ();
+
+  if ($action eq "Submit" && $id_from_cgi ne "") {
+    # Use the ID from the CGI script (user choice of a gene from a list)
+    ($IDs[0],$genenames[0],$descriptions[0])=split(/;/,$id_from_cgi);
+    $status=1;
+    $genename=$genenames[0];
+  } else {
+    # Use the input from the CGI-script
+    @return_values=search_gene_name($genename);
+    $status= shift @return_values;
+    @IDs   = @{shift @return_values};
+    @genenames = @{shift @return_values};
+    @descriptions = @{shift @return_values};
+  }
+
+  my $condition_name = find_condition_name($condition);
+
+  if ($status==2) {  # More than one gene found, show gene selection dialogue
+    my @ID_genenames_descriptions=();
+    foreach my $index(0..$#IDs) {
+      push@ID_genenames_descriptions, "$IDs[$index];$genenames[$index];$descriptions[$index]";
+    }
+
+    show_gene_selection_form(\@ID_genenames_descriptions,\@descriptions,$condition);
+  }
+  elsif ($status==1) { # One gene found, include links to images with the gene IDs 
+
+    print '<table width="100%">
+           <tr> 
+           <td align="left" valign="top">';
+    show_main_form($condition,$genename);
+
+    print ' </td> ;
+            <td align="right" valgin="top"> ';
+    show_citation(1);
+    print '</td></tr></table>';
+
+    print '<div align="center">';
+    print ("<BR><BR><H4>Tiling array profile</H4>");
+    if ($affy_column_name eq "") {
+      print "<BR> Tiling array profiles were not measured for this condition. <BR><BR>";
+    } else {
+      print "<BR>for gene <B>$descriptions[0]</B> and condition <B>$condition_name</B> </p><BR>";
+      if (try_fetch_image($IDs[0],$affy_column_name)){
+	print '<img src="/cgi-bin/PostGenomics/S_pombe/pombetv/show_image?';
+	print   'id=',$IDs[0],'&c=',$affy_column_name,'">';
+      } else {
+	print "is not available";
+      }
+    }
+      print ("<BR><BR><H4>Illumina sequencing profile</H4>");
+
+    if ($solexa_column_name eq "") {
+      
+      print "<BR> Illumina sequencing profiles were acquired for the following conditions only: YE, M1, M2, M3, M4, M5. </UL>.";
+    } 
+    else {       
+       print (" <BR>for gene <B>$descriptions[0]</B> and condition <B>$condition_name</B> </p><BR>");
+       if (try_fetch_image($IDs[0],$solexa_column_name)){
+	 print '<img src="/cgi-bin/PostGenomics/S_pombe/pombetv/show_image?';
+	 print   'id=',$IDs[0],'&c=',$solexa_column_name,'">';
+      } else {
+	print "is not available";
+      }
+    }
+    print '</div align="center">';    
+  }
+  elsif ($status==3) { # No gene found
+    print ('<BR><BR><p> The gene name "<B>',$genename,'"</B> could not be identified.<BR>');
+    print ('Please try another one. All gene names from geneDB are valid. <BR>');
+    show_main_form($condition,"");
+    show_citation;
+    show_citation_links;
+  }
+  else {
+    print ("Internal error");
+  }
+  print $sw->footer();
+  return();
+}
+

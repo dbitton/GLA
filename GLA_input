@@ -1,0 +1,159 @@
+#!/usr/local/bin/perl -T
+
+use strict;
+use warnings;
+
+my $debug=0;
+
+use lib qw(/var/www/lib/core);
+use lib qw(/var/www/lib/S_pombe);
+use SangerWeb;
+use GLA::GLA_module;
+
+
+
+#########
+# Author:        fs3
+# Group:         team 79
+#
+# Entrance page for Gene List Analyser
+#
+
+
+our $VERSION = do { my @r = (q$Revision: 0.1 $ =~ /\d+/mxg); sprintf '%d.'.'%03d' x $#r, @r };
+
+main();
+1;
+
+sub main {
+
+
+  my $sw = SangerWeb->new();
+  my $data_root = $sw->data_root();
+  my $data_branch="/GLA/";
+  my $data_dir=$data_root.$data_branch;
+
+  my $sw;
+  if (!$debug) {
+    $sw  = SangerWeb->new({
+      'title'   => q(Gene List Analyser),
+      # 'banner'  => q(Gene List Analyser),
+      #'inifile' => SangerWeb->document_root() . q(/Info/header.ini),
+      #'inifile' => SangerWeb->document_root() . "/PostGenomics/S_pombe/TranscriptomeViewer/header.ini",
+      # 'inifile' => q(header.ini),    
+    });
+  }
+
+  if (!$debug) {
+#    print $sw->header();
+print qq(Content-type: text/html\n\n);
+
+print qq (<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+
+<meta http-equiv="content-type" content="text/html; charset=utf-8" />
+
+<title>Bahler Lab</title>
+<meta name="keywords" content="" />
+<meta name="description" content="" />
+<link href="/css/other.css" rel="stylesheet" type="text/css" />
+</head>
+<body>
+<div id="header">
+<div style="text-align:left; margin-left:70px; margin-bottom:0px; margin-top:0px;"><span style="text-shadow:#FFF; font-family:'Arial Black', Gadget, sans-serif; font-size:32pt; color:#EBF1DE; ">b&auml;hler</span><span style="text-shadow:auto; font-family:'Arial Black', Gadget, sans-serif; font-size:32pt; color:#77933C; ">lab&#13;</span></div>
+  <div style="text-align:left; margin-left:30px; margin-top:0px;"><span style="font-family:'Arial Black', Gadget, sans-serif; font-size:20pt; color:#4F6228; "> Genome Regulation</span></div>
+  <div class="O">
+  <div style="text-align:center; margin-bottom:0; margin-top:-26px; margin-left:120px;margin-right:-20px;"><span style="font-family:Arial, Helvetica, sans-serif; font-size:55pt; color:#D7E4BD; "><strong><em>gene list analyzer&#13;</em></strong></span></div>
+<div style="text-align:right; margin-bottom:0; margin-top:-70px; margin-left:150px;margin-right:20px;"><span style="font-family:'Arial Black', Helvetica, sans-serif; font-size:36pt; color:white; ">UCL</span></div>
+  <div></div>
+</div>
+
+
+</div>
+<div id="sidebar">
+                <div id="menu">
+                        <ul>
+                                <li ><a href="/index.html" title="">Home</a></li>
+                                <li><a href="/group" title="">People</a></li>
+                                <li><a href="/research.htm" title="">Research</a></li>
+                                <li><a href="/publications" title="">Publications</a></li>
+
+                                <li class="active first"><a href="/software" title="">Resources</a></li>
+
+                                <li ><a href="/cont.htm" title="">Contact</a></li>
+                        </ul>
+                </div>
+
+
+        </div>
+
+         <div id="content">
+
+                <div class="feature bg7">
+        </div>
+
+                        <div class="content" >
+
+);
+
+  }
+
+  #########
+  # print page content
+  #
+  ########
+
+  my $file=$data_dir."_FeatureList";
+
+
+  my @annotations=read_feature_description($file);
+
+  if (!defined (@annotations)) {
+    print ("<BR><BR><H3> Error! Couldn't open the pairwise feature file $file </H3>");
+    print $sw->footer();
+    die;
+  }
+
+  my @IDs    =@{$annotations[0]};
+  my @labels =@{$annotations[1]};
+  my @scales =@{$annotations[2]};
+  my @classes=@{$annotations[3]};
+  my @sources=@{$annotations[4]};
+  my @authors=@{$annotations[5]};
+  my @dates  =@{$annotations[6]};
+  my @URLs   =@{$annotations[7]};
+
+  my $pairfeature_file=$data_dir."_PairwiseFeatureList";
+
+  @annotations=read_feature_description($pairfeature_file);
+
+  if (!defined (@annotations)) {
+    print ("<BR><BR><H3> Error! Couldn't open the pairwise feature file $pairfeature_file </H3>");
+    print $sw->footer();
+  }
+
+
+  my @pIDs    =@{$annotations[0]};
+  my @plabels =@{$annotations[1]};
+  my @pscales =@{$annotations[2]};
+  my @pclasses=@{$annotations[3]};
+  my @psources=@{$annotations[4]};
+  my @pauthors=@{$annotations[5]};
+  my @pdates  =@{$annotations[6]};
+  my @pURLs   =@{$annotations[7]};
+
+  push @IDs,@pIDs;
+  push @labels,@plabels;
+  push @scales,@pscales;
+  push @classes,@pclasses;
+  push @sources,@psources;
+  push @authors,@pauthors;
+  push @dates,@pdates;
+  push @URLs,@pURLs;
+
+  &generate_query_html_page(\@IDs,\@labels,\@scales,\@classes,\@sources,\@authors,\@dates,\@URLs);
+
+  if (!$debug) {
+    print $sw->footer();
+  }
+}

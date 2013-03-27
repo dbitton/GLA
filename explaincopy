@@ -1,0 +1,673 @@
+#!/usr/local/bin/perl -T
+
+use strict;
+use warnings;
+use Storable;
+
+my $debug=0;
+
+
+ use lib qw(/var/www/lib/core);
+ use lib qw(/var/www/lib/S_pombe);
+ use SangerWeb;
+
+ use GLA::GLA_module;
+ use POSIX;
+
+#########
+# Author:        fs3
+# Group:         team 79
+#
+# Explain page for Gene List Analyser
+#
+
+
+our $VERSION = do { my @r = (q$Revision: 0.1 $ =~ /\d+/mxg); sprintf '%d.'.'%03d' x $#r, @r };
+
+main();
+1;
+
+sub main {
+
+  my $MISSING = "NA"; # missing values are encoded as NA
+
+  my $sw = SangerWeb->new();
+  my $data_root = $sw->data_root();
+  my $data_branch="/GLA/";
+  my $data_dir=$data_root.$data_branch;
+
+
+  my $featurefile=$data_dir."_FeatureList";
+  my $pairfeature_file=$data_dir."_PairwiseFeatureList";
+  my $feature_data_file=$data_dir."_FeatureData";
+  my $all_genes_file=$data_dir."_AllGenesList";
+
+
+  my $sw;
+  if (!$debug) {
+    $sw  = SangerWeb->new({
+      'title'   => q(Gene List Analyser Explanation),
+      #'banner'  => q(Gene List Analyser),
+      #'inifile' => SangerWeb->document_root() . q(/Info/header.ini),
+      #'inifile' => SangerWeb->document_root() . "/PostGenomics/S_pombe/TranscriptomeViewer/header.ini",
+      # 'inifile' => q(header.ini),
+    });
+  } 
+
+  my $cgi;
+  my @all_parameter = ();
+  my $pthreshold        = 0.05;
+  my $mt_correction     = "FDR";
+  my $adjust_p_value_of_permutation_test=0;
+  my $number_of_permutations = 100;
+  my $genelist_string;
+
+  my @genelist;
+
+  if (!$debug) {
+    $cgi                 = $sw->cgi();
+    @all_parameter       = $cgi->param();
+
+    $pthreshold          = $cgi->param('pvalue');
+    $mt_correction       = $cgi->param('mtadjust');
+    $genelist_string     = $cgi->param('genelist');
+    if ($cgi->param('permadjust') eq "Yes") {
+      $adjust_p_value_of_permutation_test = 1;
+    } else {
+      $adjust_p_value_of_permutation_test = 0;
+    }
+    $number_of_permutations              = $cgi->param('nperm');
+
+  } 
+
+  my %feature_to_be_explained;
+  my $label_encoded;
+
+  if (!$debug) {
+
+    print $sw->header();
+  }
+
+
+  foreach my $parameter(@all_parameter) {
+    #don't care about parameter that are known
+    if ($parameter eq "pvalue") {next;}
+    if ($parameter eq "mtadjust") {next;}
+    if ($parameter eq "action") {next;}
+    if ($parameter eq "gene_names") {next;}
+    if ($parameter eq "permadjust") {next;}
+    if ($parameter eq "nperm") {next;}
+    if ($parameter eq "genelist") {next;}
+    $label_encoded=$parameter;
+  }
+
+  my @code_parts = split ('#',$label_encoded);
+  my $raw_p_value;
+  my $corrected_p_value;
+  my $test_error;
+  my $p1;
+  my $p2;
+
+
+
+  if ($#code_parts!=6) {
+    print ("<BR><BR><H3> Internal error! Couldn't read the name of the feature to be explained ($label_encoded)</H3>");
+    print $sw->footer();
+    die();
+  } else {
+    #first element: name of class (category) of feature to be explained
+    #second element: label of feature
+    $feature_to_be_explained{$code_parts[0]}{$code_parts[1]}=1;
+    $raw_p_value=$code_parts[2];
+    $corrected_p_value=$code_parts[3];
+    $test_error=$code_parts[4];
+    $p1=$code_parts[5];
+    $p2=$code_parts[6];
+
+  }
+
+  my %listed;
+  @genelist = split('#',$genelist_string);
+  foreach my $gene(@genelist) {
+   $listed{$gene}=1;
+  }
+
+  #########
+  # print page content
+  #
+  ########
+
+
+  my @annotations=read_feature_description($featurefile);
+
+  if (!defined (@annotations)) {
+    print ("<BR><BR><H3> Error! Couldn't open the feature file $featurefile </H3>");
+    print $sw->footer();
+    die;
+  }
+
+
+  my @preIDs    =@{$annotations[0]};
+  my @prelabels =@{$annotations[1]};
+  my @prescales =@{$annotations[2]};
+  my @preclasses=@{$annotations[3]};
+  my @presources=@{$annotations[4]};
+  my @preauthors=@{$annotations[5]};
+  my @predates  =@{$annotations[6]};
+  my @preURLs   =@{$annotations[7]};
+
+
+  @annotations=read_feature_description($pairfeature_file);
+
+  if (!defined (@annotations)) {
+    print ("<BR><BR><H3> Error! Couldn't open the pairwise feature file $pairfeature_file </H3>");
+    print $sw->footer();
+  }
+
+
+  my @pIDs    =@{$annotations[0]};
+  my @plabels =@{$annotations[1]};
+  my @pscales =@{$annotations[2]};
+  my @pclasses=@{$annotations[3]};
+  my @psources=@{$annotations[4]};
+  my @pauthors=@{$annotations[5]};
+  my @pdates  =@{$annotations[6]};
+  my @pURLs   =@{$annotations[7]};
+
+  push @preIDs,@pIDs;
+  push @prelabels,@plabels;
+  push @prescales,@pscales;
+  push @preclasses,@pclasses;
+  push @presources,@psources;
+  push @preauthors,@pauthors;
+  push @predates,@pdates;
+  push @preURLs,@pURLs;
+
+  my $ID; 
+  my $label;
+  my $scale;
+  my $class;
+  my $source;
+  my $author;
+  my $date;
+  my $URL;
+  my $defined_column;
+  my $i_save;
+
+  for (my $i=0;$i<=$#preIDs;$i++) {
+    # remove underline _ and replace it with a space
+    $prelabels[$i]=~tr/\_/\ /d;
+    if (defined ($feature_to_be_explained{$preclasses[$i]}{$prelabels[$i]})) {
+      $ID=$preIDs[$i];
+      $label=$prelabels[$i];
+      $scale=$prescales[$i];
+      $class=$preclasses[$i];
+      $source=$presources[$i];
+      $author=$preauthors[$i];
+      #remove quotes because they interfere with HTML
+      $predates[$i]=~tr/\"\'//d;
+      $date=$predates[$i];
+      $URL=$preURLs[$i];
+      $i_save=$i;
+
+    }
+  }
+
+  my $data_pointer;
+
+  my $pretty_label=$label;
+  if (length($label) > 50) {
+    if (length($ID) <50) {
+      $pretty_label=$ID;
+    } 
+  }
+
+  my @feature_db;
+  eval {  
+    @feature_db=@{load_array($feature_data_file)};
+  };
+  if ($@) {
+    print ("<BR><BR><H3> Error! Couldn't open the main data file ",$feature_data_file," </H3><H4>$@</H4>") && print $sw->footer() && die
+  };
+
+  my @all_genes;
+  eval {
+    @all_genes =@{load_array($all_genes_file)};
+  };
+  if ($@)
+    {print ("<BR><BR><H3> Error! Couldn't open the all genes array file", $all_genes_file," </H3><H4>$@</H4>") && print $sw->footer() && die};
+
+  if ($scale eq "Metric") {    
+    $data_pointer = $feature_db[$i_save];
+  } elsif ($scale eq "Binary") {
+    $data_pointer = $feature_db[$i_save];
+  } elsif ($scale eq "Pairwise_membership") {
+    my $reloaded_hash_ref;
+    my $hash_name=$data_dir."_hash_data_".$ID;
+
+    eval {
+      $reloaded_hash_ref= load_hash($hash_name);
+    };
+    if ($@) 
+      {print ("<BR><BR><H3> Error! Couldn't open the hash file",$hash_name," </H3><H4>$@</H4>") && print $sw->footer() && die};
+    $data_pointer=$reloaded_hash_ref;	
+  }					
+
+
+
+
+
+
+ print "<H1><center>",ucfirst($label),"</center></H1>";
+
+  print '<BR>';
+
+  
+  print '<table width="95%">';    # outer table
+  print '<COLGROUP><COL width="47%"></COLGROUP>';
+  print '<COLGROUP><COL width="47%"></COLGROUP>';
+
+  print '<tr><td>';
+  
+  print '<H3>General information</H3>';
+
+  #print '<BR>';
+  print '<div style="border:1px solid; width:100%; height:275px; overflow:auto">';
+
+  print '<table  width="95%">';   # inner table 
+  print '<COLGROUP><COL width="50%"></COLGROUP>';
+  print '<COLGROUP><COL width="50%"></COLGROUP>';
+
+  print '<tr>';
+  print '<td>';
+  print '<B>Short name</B>'; 
+  print '</td><td>';
+  print ucfirst($ID);
+  print '</td>';
+  print '</tr><tr>';
+  print '<td>';
+  print "<B>Long name</B>"; 
+  print '</td><td>';
+  print ucfirst($label);
+  print '</td>';
+  print '</tr><tr>';
+  print '<td>';
+  print "<B>Concept or category</B>"; 
+  print '</td><td>';
+  print ucfirst($class);
+  print '</td>';
+  print '</tr><tr>';
+  print '<td><BR>';    
+  print '</td><td>';
+  print '</td>';  
+  print '</tr><tr>';
+  print '<td>';
+  print "<B>Scale of measurement</B>"; 
+  print '</td><td>';
+  if ($scale eq "Binary") {
+    print 'Categorial (also called "nominal")';
+  } elsif ($scale eq "Pairwise_membership") {
+    print "Pairwise categorial";
+  } elsif ($scale eq "Metric") {
+    print "Continous (interval or ratio)";
+  } elsif ($scale eq "Ordinal") {
+    print "Ordinal";
+  } else {
+    print "Unknown";
+  }
+  print '</td>';
+  print '</tr><tr>';
+  print '<td>';
+  print "<B>Statistical test applied</B>"; 
+  print '</td><td>';
+  if ($scale eq "Binary") {
+    print 'Fisher\'s exact test for count data';
+  } elsif ($scale eq "Pairwise_membership") {
+    print "Permutation test based on $number_of_permutations permutations";
+  } elsif ($scale eq "Metric") {
+    print "Two-sided Wilcoxon rank sum tests";
+  } elsif ($scale eq "Ordinal") {
+    print "None";
+  } else {
+    print "Unknown";
+  }
+  print '</td>';
+  print '</tr><tr>';
+  print '<td><BR>';    
+  print '</td><td>';
+  print '</td>';  
+  print '</tr><tr>';
+  print '<td>';
+  print "<B>Source</B>"; 
+  print '</td><td>';
+  print $source;
+  print '</td>';
+  print '</tr><tr>';
+  print '<td>';
+  print "<B>Curator</B>"; 
+  print '</td><td>';
+  print $author;
+  print '</td>';
+  print '</tr><tr>';
+  print '<td>';
+  print "<B>Last update</B>"; 
+  print '</td><td>';
+  print $date;
+  print '</td>';
+  print '</tr><tr>';
+  print '<td>';
+  print "<B>URL</B>";
+  print '</td><td>';
+  if ($URL ne "" && $URL ne 'NA') {
+    print '<a href="',$URL,'">',$URL,'</a>';
+  } else {
+    print "None.";
+  }
+  print '</td>';
+  print '</tr>';
+  print '</table>';
+
+  print '</div>';
+  print '</td><td>';# outer table
+
+
+
+  print "<H3>Test results</H3>";
+  #print '<BR>';
+
+  print '<div style="border:1px solid; width:100%; height:275px; overflow:auto">';
+  print '<table  width="95%">';    
+  print '<COLGROUP><COL width="50%"></COLGROUP>';
+  print '<COLGROUP><COL width="50%"></COLGROUP>';
+
+  print '<tr>';
+  print '<td>';
+  print '<B>Summary</B>'; 
+  print '</td><td>';
+  print '<B>',ucfirst($pretty_label),' is ';
+  if ($p1>$p2) {
+    if ($scale eq "Binary" || $scale eq "Pairwise_membership") {
+      print '<font color="#009000"> enriched';
+    } else {
+      print '<font color="#009000"> higher';
+    }
+  } elsif ($p1<$p2) {
+    if ($scale eq "Binary" || $scale eq "Pairwise_membership") {
+      print '<font color="#D00000"> underrepresented ';
+    } else {
+      print '<font color="#D00000"> lower ';
+    }
+  } else {
+    print '<font color="#000000"> equal ';
+  }
+  print "</font> in your submitted genelist  ";
+  print "compared to all other genes that are not part of this list";    
+  print '</td>';
+  print '</tr><tr>';
+  print '<td><B>';
+  if ($scale eq "Binary") {
+    print "Percentage of ",$pretty_label," genes within your submitted genelist";
+  } elsif ($scale eq "Pairwise_membership") {
+    print "Number of ",$pretty_label," pairs within your submitted genelist";
+  } elsif ($scale eq "Metric") {
+    print "Average ",$pretty_label," within your submitted genelist";
+  } else {
+    print "Unknown parameter";
+  }
+  print '<B></td><td>';
+  if ($scale eq "Binary") {		   
+    print (sprintf("%10.5f%%",$p1*100));
+  } else {
+    print $p1;
+  }
+  print '</td>';
+  print '</tr><tr>';
+  print '<td><B>';
+  if ($scale eq "Binary") {
+    print "Percentage of ",$pretty_label," genes within all other genes";
+  } elsif ($scale eq "Pairwise_membership") {
+    print "Average number of ",$pretty_label," pairs within a random list of the same length drawn from all other genes";
+  } elsif ($scale eq "Metric") {
+    print "Average ",$pretty_label," within all other genes";
+  } else {
+    print "Unknown parameter";
+  }
+  print '<B></td><td>';
+  if ($scale eq "Binary") {		   
+    print (sprintf("%10.5f%%",$p2*100));
+  } else {
+    print $p2;
+  }
+  print '</B></td>';  print '</tr>';
+
+  print '<tr>';
+  print '<td>';
+  print '<B>Raw p-value</B>'; 
+  print '</td><td>';
+  if ($raw_p_value > 0.00000001) {
+    printf "%1.8f",$raw_p_value;
+  } else {
+    printf "<0.00000001";
+  }
+  print '</td>';
+  print '</tr><tr>';
+  print '<td>';
+  print "<B>Corrected p-value</B>"; 
+  print '</td><td>';
+  if ($corrected_p_value > 0.00000001) {
+    printf "%1.8f",$corrected_p_value;
+  } else {
+    printf "<0.00000001";
+  }
+  print '</td>';
+  print '</tr><tr>';
+  print '<td>';
+  print "<B>Significance threshold for p-values</B>"; 
+  print '</td><td>';
+  print $pthreshold;
+  print '</td>';
+  print '</tr><tr>';
+  print '<td>';
+  print "<B>Remarks</B>"; 
+  print '</td><td>';
+  my $test_remark;
+  if ($test_error==1) {
+    $test_remark="The approximation of the chi-squared distribution may be inadequate.";
+  }
+  elsif ($test_error==2) {
+    $test_remark="The approximation of the normal distribution may be inadequate.";
+  }
+  elsif ($test_error==3) {
+    $test_remark="No p-value was calculated.";
+  } elsif ($test_error ne "") 
+    { $test_remark=$test_error;}
+  print $test_remark;
+  print '</td>';
+  print '</tr><tr>';
+  print '<td>';
+  print "<B>Correction for multiple tests</B>"; 
+  print '</td><td>';
+  if (!$adjust_p_value_of_permutation_test && $scale eq "Pairwise_membership") {
+    print 'None for permutation tests.';
+  } else {
+    print $mt_correction;
+  }
+  print '</td>';
+
+  print '</td>';  print '</tr>';
+  print '</table>';
+  
+  print '</div>';
+
+  print '</td></tr>';# outer table
+  print '</table>';  # outer table
+
+
+  print '<BR><BR>';
+
+
+    print '<center>';
+
+    if ($scale eq "Binary") {
+      my $found=0;
+
+      print "<H3>All ",($pretty_label)," genes from your gene list </H3>";
+      print '<BR>';
+
+
+      #print '<div style="border:1px solid; width:300px; height:300px; overflow:auto;">';
+      print '<div style="border:1px solid; width:300px; height:300px; overflow:auto;">';
+
+      print '<table name="table1" width="240">';
+
+      my @category_IDs=@{$data_pointer};
+      foreach my $gene(@category_IDs) {
+	if (defined($listed{$gene})) {
+	  print '<tr><td>',name_and_genedb_link($gene),'</td></tr>';
+	  $found=1;
+	} 
+      }
+      print "<tr><td>None</td>,</tr>" unless $found;
+     print "</table>";
+      print '</div>';
+    }
+    elsif ($scale eq "Pairwise_membership") {
+
+      my $found=0;
+
+      print "<H3>All ",$pretty_label," gene pairs from your gene list </H3>";
+      print '<BR>';
+
+
+      print '<div style="border:1px solid; width:500px; height:300px; overflow:auto;">';
+
+      print '<table width="460" >';
+
+      my %pairs=%{$data_pointer};
+
+      for (my $i=0;$i<= $#genelist;$i++) {
+        for (my $j=$i+1;$j<= $#genelist;$j++) {
+	  my $gene1=$genelist[$i];
+	  my $gene2=$genelist[$j];
+	  if (defined ($pairs{$gene1}{$gene2}) || defined ($pairs{$gene2}{$gene1})) {
+	    $found=1;
+	    print '<tr><td style="border:1px solid;">',name_and_genedb_link($gene1),'</td>',
+	          '<td style="border:1px solid;">',name_and_genedb_link($gene2),'</td></tr>';
+	  }
+	}
+      }
+      print "<tr><td>None</td></tr>" unless $found;
+      print "</table>";
+      print '</div>';
+    }
+    elsif ($scale eq "Metric") {
+
+      my $found=0;
+
+      print "<H3>All genes from your gene list with a",
+              ($p1>$p2)?" high ":" low ",'"',$pretty_label,'"</H3>';	
+      print '<BR>';
+
+      #print '<div style="border:1px solid; width:300px; height:300px; overflow:auto;">';
+      print '<div style="border:1px solid; width:300px; height:300px; overflow:auto;">';
+
+      print '<table width="240">';
+
+      my %values_in_list=();
+      my @values_background=();
+
+      my @feature_values=@{$data_pointer};
+      foreach my $gene(@all_genes) {
+	my $value=shift @feature_values;
+	if ($value ne $MISSING) {
+	  if (defined($listed{$gene})) {
+	    $values_in_list{$gene}=$value;
+	    $found=1;
+	  } else {
+	    push @values_background, $value;
+	  }	
+	}
+      }
+      
+
+      my $threshold;
+            
+      if ($p1>$p2) {
+	$threshold=quantile(0.95,\@values_background);
+      } else {
+	$threshold=quantile(0.05,\@values_background);
+      }
+
+      my @sorted_genes;
+
+      if ($p1>$p2) {
+        #sort descending
+	@sorted_genes=sort {$values_in_list{$b} <=> $values_in_list{$a}} @genelist;
+      } else {
+	#sort ascending
+	@sorted_genes=sort {$values_in_list{$a} <=> $values_in_list{$b}} @genelist;	
+      }
+
+      print '<tr><td>Gene name</td>',
+                '<td>',ucfirst($pretty_label),'</td></tr>';
+
+      foreach my $gene(@sorted_genes) {
+	if (defined($listed{$gene})) {
+	  if ((($p1>$p2) && ($values_in_list{$gene}>$p2) ||
+	       ($p1<$p2) && ($values_in_list{$gene}<$p2))) {
+	    my $bold=0;
+	    if ((($p1>$p2) && ($values_in_list{$gene}>$threshold) ||
+	       ($p1<$p2) && ($values_in_list{$gene}<$threshold))) {
+	      $bold=1;
+	    }
+	    
+	    print '<tr><td>',$bold?"<B>":"",name_and_genedb_link($gene),$bold?"</B>":"",'
+                 </td>','<td>',$bold?"<B>":"",$values_in_list{$gene},$bold?"<B>":"",'</td></tr>';
+	  }
+	} 
+      }      
+      print "<tr><td>None</td></tr>" unless $found;
+      print "</table>";
+      print '</div>';
+      print "<p>This list includes all genes from your gene list with a $pretty_label",($p1>$p2)?" higher ":" lower "," than the average of all other genes ($p2).";
+      print "<p><B>Bold genes</B> have a $pretty_label ",($p1>$p2)?" above ":" below "," the ",($p1>$p2)?" 95% ":" 5% ","quantile of all other genes ($threshold).";
+
+    }
+    else {
+      ;
+    }
+
+  print '</center>';
+
+  print "<BR>";
+  print '<center><BR><FORM><INPUT TYPE="button" VALUE="Back" onClick="history.go(-1);return true;"> </FORM></center>';
+  print $sw->footer();
+
+
+}
+
+
+
+
+sub name_and_genedb_link {
+  my $gene = shift @_;
+  my $gene_link='http://www.genedb.org/genedb/Search?submit=Search+for&name='.$gene.'&organism=pombe&desc=yes&wildcard=no';
+  return('<a href="'.$gene_link.'">'.$gene.'</a>');
+}
+
+
+
+sub quantile {
+
+  my $q= shift @_;
+  my @array = @{shift @_};
+
+  if (($q<0) || ($q >1)) {
+    return ("NA");
+  }
+
+  my @array_sorted = sort {$a<=>$b} @array;
+
+  return ($array_sorted[floor($q*($#array_sorted+1))]);
+
+}
